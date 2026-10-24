@@ -61,6 +61,29 @@ The executable wires the engine and handler together with a dedicated HTTP mux.
 A five-second header timeout bounds how long clients can take to send headers.
 The listen address is fixed at :8080 for this exercise.
 
+## Logging
+
+The executable creates a standard-library log/slog logger with JSON output to
+standard error and passes it into the HTTP server. Each record includes a time,
+level, message, and structured fields.
+
+- INFO: server startup, including the listen address.
+- ERROR: unexpected calculation failures, with method, path, count, and error.
+- ERROR: response-writing failures, with the intended HTTP status and error.
+- ERROR: server failures, with the listen address and error. Fatal server
+  failures exit with status 1.
+
+The HTTP server's internal error logger uses the same structured handler.
+Expected input validation failures are returned to the client without error
+logs. Successful requests are not logged individually; access logging is
+omitted to keep the example focused. The calculation engine does not log.
+
+For example, a startup record has this shape:
+
+```json
+{"time":"2026-10-24T12:00:00Z","level":"INFO","msg":"starting server","addr":":8080"}
+```
+
 ## Layout
 
 ```text

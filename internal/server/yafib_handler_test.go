@@ -1,9 +1,12 @@
 package server_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -46,6 +49,8 @@ func TestYafibHandler(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			logger := slog.New(slog.NewJSONHandler(&logs, nil))
 			calls := 0
 			generator := generatorFunc(func(count int) ([]uint64, error) {
 				calls++
@@ -55,9 +60,29 @@ func TestYafibHandler(t *testing.T) {
 				return tt.wantNumbers, tt.generatorError
 			})
 			rr := httptest.NewRecorder()
-			server.NewServer(generator).YafibHandler(rr, httptest.NewRequest(tt.method, "/api/yafib"+tt.query, nil))
+			server.NewServer(generator, logger).YafibHandler(rr, httptest.NewRequest(tt.method, "/api/yafib"+tt.query, nil))
 			if rr.Code != tt.wantStatus {
 				t.Fatalf("status = %d, want %d; body = %s", rr.Code, tt.wantStatus, rr.Body.String())
+			}
+			if tt.wantStatus == http.StatusInternalServerError {
+				var entry struct {
+					Level  string
+					Msg    string
+					Method string
+					Path   string
+					Count  int
+					Error  string
+				}
+				if err := json.Unmarshal(logs.Bytes(), &entry); err != nil {
+					t.Fatalf("decode error log: %v", err)
+				}
+				if entry.Level != "ERROR" || entry.Msg != "calculation failed" ||
+					entry.Method != tt.method || entry.Path != "/api/yafib" ||
+					entry.Count != tt.wantCount || entry.Error != tt.generatorError.Error() {
+					t.Errorf("unexpected error log: %+v", entry)
+				}
+			} else if logs.Len() != 0 {
+				t.Errorf("unexpected log: %s", logs.String())
 			}
 			wantCalls := 0
 			if tt.wantCall {
@@ -94,7 +119,7 @@ func TestYafibHandler(t *testing.T) {
 }
 
 func TestYafibHandlerWithEngine(t *testing.T) {
-	handler := server.NewServer(engine.NewFibonacciEngine())
+	handler := server.NewServer(engine.NewFibonacciEngine(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
 	for _, count := range []int{0, 94, 95} {
 		t.Run(fmt.Sprint(count), func(t *testing.T) {
 			rr := httptest.NewRecorder()
@@ -126,5 +151,37 @@ func TestYafibHandlerWithEngine(t *testing.T) {
 				t.Errorf("incorrect final value: %d", body.Numbers[93])
 			}
 		})
+	}
+}
+
+type failingResponseWriter struct {
+	header http.Header
+}
+
+func (w *failingResponseWriter) Header() http.Header { return w.header }
+func (w *failingResponseWriter) WriteHeader(int)     {}
+func (w *failingResponseWriter) Write([]byte) (int, error) {
+	return 0, errors.New("connection closed")
+}
+
+func TestYafibHandlerLogsWriteFailure(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	handler := server.NewServer(engine.NewFibonacciEngine(), logger)
+	handler.YafibHandler(&failingResponseWriter{header: make(http.Header)},
+		httptest.NewRequest(http.MethodGet, "/api/yafib?count=3", nil))
+
+	var entry struct {
+		Level  string
+		Msg    string
+		Status int
+		Error  string
+	}
+	if err := json.Unmarshal(logs.Bytes(), &entry); err != nil {
+		t.Fatalf("decode error log: %v", err)
+	}
+	if entry.Level != "ERROR" || entry.Msg != "response write failed" ||
+		entry.Status != http.StatusOK || entry.Error != "connection closed" {
+		t.Errorf("unexpected write failure log: %+v", entry)
 	}
 }

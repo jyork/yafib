@@ -3,7 +3,7 @@ package server
 import (
 	"encoding/json"
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 	"strconv"
 
@@ -25,59 +25,60 @@ type SequenceGenerator interface {
 
 type Server struct {
 	generator SequenceGenerator
+	logger    *slog.Logger
 }
 
-func NewServer(g SequenceGenerator) *Server {
-	return &Server{generator: g}
+func NewServer(g SequenceGenerator, logger *slog.Logger) *Server {
+	return &Server{generator: g, logger: logger}
 }
 
 // YafibHandler accepts GET with a count query parameter.
 func (s *Server) YafibHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", "GET")
-		respondWithError(w, http.StatusMethodNotAllowed, "Method not allowed. Use GET.")
+		s.respondWithError(w, http.StatusMethodNotAllowed, "Method not allowed. Use GET.")
 		return
 	}
 
 	queryParam := r.URL.Query().Get("count")
 	if queryParam == "" {
-		respondWithError(w, http.StatusBadRequest, "Missing required query parameter 'count'")
+		s.respondWithError(w, http.StatusBadRequest, "Missing required query parameter 'count'")
 		return
 	}
 
 	count, err := strconv.Atoi(queryParam)
 	if err != nil {
-		respondWithError(w, http.StatusBadRequest, "Parameter 'count' must be a valid integer")
+		s.respondWithError(w, http.StatusBadRequest, "Parameter 'count' must be a valid integer")
 		return
 	}
 	if count < 0 {
-		respondWithError(w, http.StatusBadRequest, "Parameter 'count' cannot be negative")
+		s.respondWithError(w, http.StatusBadRequest, "Parameter 'count' cannot be negative")
 		return
 	}
 
 	numbers, err := s.generator.CalculateFibonacciSequence(count)
 	if err != nil {
 		if errors.Is(err, engine.ErrInvalidCount) {
-			respondWithError(w, http.StatusBadRequest, err.Error())
+			s.respondWithError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		log.Printf("Failed to generate Fibonacci sequence: %v", err)
-		respondWithError(w, http.StatusInternalServerError, "Failed to generate Fibonacci sequence")
+		s.logger.ErrorContext(r.Context(), "calculation failed", "method", r.Method, "path", r.URL.Path, "count", count, "error", err)
+		s.respondWithError(w, http.StatusInternalServerError, "Failed to generate Fibonacci sequence")
 		return
 	}
 
-	writeJSON(w, http.StatusOK, SuccessResponse{Numbers: numbers})
+	s.writeJSON(w, http.StatusOK, SuccessResponse{Numbers: numbers})
 }
 
-func respondWithError(w http.ResponseWriter, statusCode int, message string) {
-	writeJSON(w, statusCode, ErrorResponse{Error: message})
+func (s *Server) respondWithError(w http.ResponseWriter, statusCode int, message string) {
+	s.writeJSON(w, statusCode, ErrorResponse{Error: message})
 }
 
-func writeJSON(w http.ResponseWriter, statusCode int, body any) {
+func (s *Server) writeJSON(w http.ResponseWriter, statusCode int, body any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
 	if err := json.NewEncoder(w).Encode(body); err != nil {
 		// Headers have already been sent, so a second HTTP error cannot be written.
-		log.Printf("Failed to write JSON response: %v", err)
+		s.logger.Error("response write failed", "status", statusCode, "error", err)
 	}
 }
