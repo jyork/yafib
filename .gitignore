@@ -1,0 +1,23 @@
+# Compiled binaries and build output
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/yafibserver
+/bin/
+/dist/
+
+# Go test binaries, coverage, and profiling output
+*.test
+*.out
+*.prof
+/coverage/
+
+# Go debugger binaries
+__debug_bin*
+
+# Operating system files
+.DS_Store
+Thumbs.db
+Desktop.ini
